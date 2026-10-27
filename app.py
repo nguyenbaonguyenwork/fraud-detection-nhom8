@@ -757,12 +757,22 @@ if result is not None:
     try:
         import shap
 
-        feature_names = list(FEATURE_COLS)
+        # Toàn bộ phần xử lý SHAP đặt ở đây,
+        # thụt vào 8 dấu cách so với đầu dòng if.
 
-        # Kiểm tra dữ liệu đầu vào
-        if selected_features.empty:
-            st.warning("Không có dữ liệu để giải thích SHAP.")
-            st.stop()
+    except ImportError:
+        st.error(
+            "Chưa cài SHAP. Chạy lệnh: "
+            "`python -m pip install shap`"
+        )
+
+    except Exception as error:
+        st.error(
+            "Không tạo được giải thích SHAP cho giao dịch này."
+        )
+
+        with st.expander("Chi tiết lỗi SHAP"):
+            st.exception(error)
 
         # Lấy một giao dịch cần giải thích
         target_raw = selected_features.iloc[[0]][feature_names].copy()
