@@ -750,52 +750,255 @@ if result is not None:
         )
 
         if st.button(
-            "Tạo giải thích SHAP cho giao dịch này",
-            type="primary",
-            key="run_shap",
-        ):
+    "Tạo giải thích SHAP cho giao dịch này",
+    type="primary",
+    key="run_shap",
+):
+    try:
+        import shap
 
-            try:
-                import shap
+        feature_names = list(FEATURE_COLS)
 
-                feature_names = list(FEATURE_COLS)
+        # Kiểm tra dữ liệu đầu vào
+        if selected_features.empty:
+            st.warning("Không có dữ liệu để giải thích SHAP.")
+            st.stop()
 
-                # Lấy mẫu nền từ file đang phân tích.
-                # Với file rất lớn, chỉ sử dụng tối đa 20 dòng làm nền.
-                background_n = min(20, len(selected_features))
+        # Lấy một giao dịch cần giải thích
+        target_raw = selected_features.iloc[[0]][feature_names].copy()
 
-                background = selected_features.sample(
-                    n=background_n,
-                    random_state=42,
-                ).copy()
+        # Lấy tối đa 20 dòng làm dữ liệu nền
+        background_raw = selected_features[
+            feature_names
+        ].sample(
+            n=min(20, len(selected_features)),
+            random_state=42,
+        ).copy()
 
-                def predict_probability(x):
-                    """
-                    SHAP gọi hàm này để đánh giá đầu ra của pipeline.
-                    Không tạo hoặc huấn luyện mô hình dự đoán mới.
-                    """
-                    x_df = pd.DataFrame(
-                        x,
-                        columns=feature_names,
-                    )
+        # Xác định biến số và biến phân loại
+        numeric_cols = [
+            col for col in feature_names
+            if pd.api.types.is_numeric_dtype(
+                selected_features[col]
+            )
+        ]
 
-                    p_values, _ = pipe.score_frame(x_df)
+        categorical_cols = [
+            col for col in feature_names
+            if col not in numeric_cols
+        ]
 
-                    return np.asarray(
-                        p_values,
-                        dtype=float,
-                    ).reshape(-1)
+        # Chuẩn hóa biến số
+        if numeric_cols:
+            for col in numeric_cols:
+                background_raw[col] = pd.to_numeric(
+                    background_raw[col],
+                    errors="coerce",
+                )
 
-                        if st.button(
-            "Tạo giải thích SHAP cho giao dịch này",
-            type="primary",
-            key="run_shap",
-        ):
-            try:
-                import shap
-                from pandas.api.types import is_numeric_dtype
+                target_raw[col] = pd.to_numeric(
+                    target_raw[col],
+                    errors="coerce",
+                )
 
-                feature_names = list(FEATURE_COLS)
+                median_value = background_raw[col].median()
+
+                if pd.isna(median_value):
+                    median_value = 0.0
+
+                background_raw[col] = background_raw[col].fillna(
+                    median_value
+                )
+
+                target_raw[col] = target_raw[col].fillna(
+                    median_value
+                )
+
+        # Mã hóa biến phân loại thành số nguyên để SHAP xử lý
+        category_maps = {}
+
+        for col in categorical_cols:
+            background_raw[col] = (
+                background_raw[col]
+                .fillna("__MISSING__")
+                .astype(str)
+            )
+
+            target_raw[col] = (
+                target_raw[col]
+                .fillna("__MISSING__")
+                .astype(str)
+            )
+
+            categories = sorted(
+                set(background_raw[col].tolist())
+                | set(target_raw[col].tolist())
+            )
+
+            category_maps[col] = {
+                category: index
+                for index, category in enumerate(categories)
+            }
+
+            background_raw[col] = background_raw[col].map(
+                category_maps[col]
+            )
+
+            target_raw[col] = target_raw[col].map(
+                category_maps[col]
+            )
+
+        # Chuyển toàn bộ dữ liệu thành ma trận số
+        background_matrix = background_raw[
+            feature_names
+        ].to_numpy(dtype=float)
+
+        target_matrix = target_raw[
+            feature_names
+        ].to_numpy(dtype=float)
+
+        # Khôi phục dữ liệu về định dạng đầu vào mà pipeline yêu cầu
+        def decode_matrix(matrix):
+            matrix = np.asarray(matrix, dtype=float)
+
+            decoded = pd.DataFrame(
+                matrix,
+                columns=feature_names,
+            )
+
+            for col in categorical_cols:
+                categories = list(category_maps[col].keys())
+                codes = np.array([
+                    category_maps[col][category]
+                    for category in categories
+                ])
+
+                decoded[col] = [
+                    categories[
+                        int(np.argmin(np.abs(codes - value)))
+                    ]
+                    for value in decoded[col]
+                ]
+
+            return decoded[feature_names]
+
+        # Hàm lấy xác suất từ chính pipeline đã huấn luyện
+        def predict_probability(matrix):
+            input_df = decode_matrix(matrix)
+
+            probabilities, _ = pipe.score_frame(input_df)
+
+            return np.asarray(
+                probabilities,
+                dtype=float,
+            ).reshape(-1)
+
+        # Tính SHAP
+        with st.spinner("Đang tính SHAP..."):
+            explainer = shap.Explainer(
+                predict_probability,
+                background_matrix,
+                algorithm="permutation",
+                feature_names=feature_names,
+            )
+
+            shap_values = explainer(
+                target_matrix,
+                max_evals=max(
+                    2 * len(feature_names) + 1,
+                    100,
+                ),
+            )
+
+        # Tạo bảng giải thích
+        shap_table = pd.DataFrame({
+            "Đặc trưng": feature_names,
+            "Giá trị giao dịch": [
+                selected_features.iloc[0][col]
+                for col in feature_names
+            ],
+            "SHAP value": np.asarray(
+                shap_values.values
+            ).reshape(-1),
+        })
+
+        shap_table["Độ lớn đóng góp"] = (
+            shap_table["SHAP value"].abs()
+        )
+
+        shap_table = shap_table.sort_values(
+            "Độ lớn đóng góp",
+            ascending=False,
+        )
+
+        st.success("Đã tạo giải thích SHAP.")
+
+        st.caption(
+            "SHAP value dương thể hiện đóng góp làm tăng "
+            "đầu ra xác suất gian lận; SHAP value âm thể hiện "
+            "đóng góp làm giảm đầu ra. Đây là mức đóng góp của "
+            "đặc trưng theo dữ liệu nền, không phải quan hệ nhân quả."
+        )
+
+        st.dataframe(
+            shap_table.head(15),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "SHAP value": st.column_config.NumberColumn(
+                    format="%.6f"
+                ),
+                "Độ lớn đóng góp": st.column_config.NumberColumn(
+                    format="%.6f"
+                ),
+            },
+        )
+
+        st.markdown("### Các yếu tố làm tăng xác suất gian lận")
+
+        increasing = shap_table[
+            shap_table["SHAP value"] > 0
+        ].head(5)
+
+        if increasing.empty:
+            st.write("Không có yếu tố đóng góp dương trong kết quả.")
+        else:
+            for _, row in increasing.iterrows():
+                st.write(
+                    f"- **{row['Đặc trưng']}** "
+                    f"(giá trị: {row['Giá trị giao dịch']}): "
+                    f"SHAP = {row['SHAP value']:+.6f}"
+                )
+
+        st.markdown("### Các yếu tố làm giảm xác suất gian lận")
+
+        decreasing = (
+            shap_table[shap_table["SHAP value"] < 0]
+            .sort_values("SHAP value")
+            .head(5)
+        )
+
+        if decreasing.empty:
+            st.write("Không có yếu tố đóng góp âm trong kết quả.")
+        else:
+            for _, row in decreasing.iterrows():
+                st.write(
+                    f"- **{row['Đặc trưng']}** "
+                    f"(giá trị: {row['Giá trị giao dịch']}): "
+                    f"SHAP = {row['SHAP value']:+.6f}"
+                )
+
+    except ImportError:
+        st.error(
+            "Chưa cài SHAP. Chạy lệnh: "
+            "`python -m pip install shap`"
+        )
+
+    except Exception as error:
+        st.error("Không tạo được giải thích SHAP cho giao dịch này.")
+
+        with st.expander("Chi tiết lỗi SHAP"):
+            st.exception(error)
 
                 # ------------------------------------------------
                 # 1. Chuẩn bị dữ liệu nền
