@@ -1,4 +1,4 @@
-        demo_view["Dự đoán theo ngưỡng đang chọn"] = np.where(
+demo_view["Dự đoán theo ngưỡng đang chọn"] = np.where(
             pred == 1, "Gian lận", "Bình thường"
         )
         demo_view["Khớp nhãn thực tế"] = np.where(
