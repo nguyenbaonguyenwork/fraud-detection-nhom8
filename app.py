@@ -26,36 +26,12 @@ st.set_page_config(
 # 2. GIAO DIỆN
 # ============================================================
 
+st.title("Hệ thống phát hiện giao dịch gian lận")
+
 st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-    }
-
-    .main-title {
-        font-size: 2rem;
-        font-weight: 700;
-        margin-bottom: 0.2rem;
-    }
-
-    .sub-title {
-        color: #6b7280;
-        font-size: 1rem;
-        margin-bottom: 1.5rem;
-    }
-
-    div[data-testid="stMetric"] {
-        border: 1px solid rgba(128, 128, 128, 0.25);
-        padding: 14px;
-        border-radius: 10px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+    "Tải lên dữ liệu giao dịch để hệ thống đánh giá xác suất gian lận, "
+    "phân loại mức độ rủi ro và đưa ra hành động đề xuất."
 )
-
 
 # ============================================================
 # 3. TẢI MÔ HÌNH
