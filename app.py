@@ -12,7 +12,7 @@ from features import RAW_REQUIRED, build_feature_frame
 
 LOW_THRESHOLD = 0.05
 HIGH_THRESHOLD = 0.12
-MAX_ROWS = 300_000
+MAX_ROWS = 1_000_000
 
 st.set_page_config(
     page_title="Fraud Detection System",
@@ -336,7 +336,8 @@ uploaded_file = st.file_uploader(
     "Chọn file dữ liệu giao dịch",
     type=["csv", "xlsx", "xls"],
     accept_multiple_files=False,
-    help="Hỗ trợ CSV, XLSX và XLS.",
+    max_upload_size=1024,
+    help="Hỗ trợ CSV, XLSX, XLS; dung lượng tối đa 1 GB.",
 )
 
 with st.expander("Xem các cột dữ liệu bắt buộc"):
