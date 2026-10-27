@@ -786,11 +786,365 @@ if result is not None:
                         dtype=float,
                     ).reshape(-1)
 
-                explainer = shap.Explainer(
-                    predict_probability,
-                    background,
-                    algorithm="permutation",
+                        if st.button(
+            "Tạo giải thích SHAP cho giao dịch này",
+            type="primary",
+            key="run_shap",
+        ):
+            try:
+                import shap
+                from pandas.api.types import is_numeric_dtype
+
+                feature_names = list(FEATURE_COLS)
+
+                # ------------------------------------------------
+                # 1. Chuẩn bị dữ liệu nền
+                # ------------------------------------------------
+
+                background_raw = selected_features.sample(
+                    n=min(20, len(selected_features)),
+                    random_state=42,
+                ).copy()
+
+                background_raw = background_raw[feature_names]
+                target_raw = selected_feature_row[feature_names].copy()
+
+                # Xác định cột số và cột phân loại.
+                numeric_cols = [
+                    col for col in feature_names
+                    if is_numeric_dtype(selected_features[col])
+                ]
+
+                categorical_cols = [
+                    col for col in feature_names
+                    if col not in numeric_cols
+                ]
+
+                # ------------------------------------------------
+                # 2. Mã hóa đầu vào thành ma trận số cho SHAP
+                # ------------------------------------------------
+
+                category_values = {}
+                encoded_names = []
+                encoded_background_parts = []
+                encoded_target_parts = []
+
+                # Biến số: giữ nguyên giá trị số.
+                if numeric_cols:
+                    bg_num = background_raw[numeric_cols].apply(
+                        pd.to_numeric,
+                        errors="coerce",
+                    )
+
+                    target_num = target_raw[numeric_cols].apply(
+                        pd.to_numeric,
+                        errors="coerce",
+                    )
+
+                    # Điền giá trị thiếu bằng trung vị của mẫu nền.
+                    medians = bg_num.median().fillna(0)
+
+                    bg_num = bg_num.fillna(medians)
+                    target_num = target_num.fillna(medians)
+
+                    encoded_background_parts.append(
+                        bg_num.to_numpy(dtype=float)
+                    )
+
+                    encoded_target_parts.append(
+                        target_num.to_numpy(dtype=float)
+                    )
+
+                    encoded_names.extend(numeric_cols)
+
+                # Biến phân loại: one-hot encoding.
+                for col in categorical_cols:
+                    bg_values = (
+                        background_raw[col]
+                        .fillna("__MISSING__")
+                        .astype(str)
+                    )
+
+                    target_values = (
+                        target_raw[col]
+                        .fillna("__MISSING__")
+                        .astype(str)
+                    )
+
+                    categories = sorted(
+                        set(bg_values.tolist())
+                        | set(target_values.iloc[:, 0].tolist())
+                    )
+
+                    category_values[col] = categories
+
+                    onehot_bg = pd.DataFrame({
+                        f"{col}={category}": (
+                            bg_values == category
+                        ).astype(float).to_numpy()
+                        for category in categories
+                    })
+
+                    onehot_target = pd.DataFrame({
+                        f"{col}={category}": (
+                            target_values.iloc[0] == category
+                        ).astype(float)
+                        for category in categories
+                    })
+
+                    encoded_background_parts.append(
+                        onehot_bg.to_numpy(dtype=float)
+                    )
+
+                    encoded_target_parts.append(
+                        onehot_target.to_numpy(dtype=float)
+                    )
+
+                    encoded_names.extend(onehot_bg.columns.tolist())
+
+                background_matrix = np.concatenate(
+                    encoded_background_parts,
+                    axis=1,
                 )
+
+                target_matrix = np.concatenate(
+                    encoded_target_parts,
+                    axis=1,
+                )
+
+                # ------------------------------------------------
+                # 3. Giải mã ma trận số về đúng định dạng pipeline
+                # ------------------------------------------------
+
+                n_numeric = len(numeric_cols)
+
+                def decode_matrix(matrix):
+                    matrix = np.asarray(matrix, dtype=float)
+
+                    decoded = pd.DataFrame(
+                        index=range(len(matrix)),
+                        columns=feature_names,
+                    )
+
+                    # Khôi phục các biến số.
+                    if numeric_cols:
+                        decoded.loc[:, numeric_cols] = matrix[
+                            :, :n_numeric
+                        ]
+
+                    # Khôi phục biến phân loại bằng nhóm one-hot.
+                    offset = n_numeric
+
+                    for col in categorical_cols:
+                        categories = category_values[col]
+                        width = len(categories)
+
+                        group = matrix[:, offset:offset + width]
+                        chosen = np.argmax(group, axis=1)
+
+                        decoded[col] = [
+                            categories[index]
+                            for index in chosen
+                        ]
+
+                        offset += width
+
+                    # Khôi phục kiểu số cho các cột số.
+                    for col in numeric_cols:
+                        decoded[col] = pd.to_numeric(
+                            decoded[col],
+                            errors="coerce",
+                        )
+
+                    return decoded[feature_names]
+
+                # ------------------------------------------------
+                # 4. Hàm dự đoán dùng đúng pipeline đã huấn luyện
+                # ------------------------------------------------
+
+                def predict_probability(matrix):
+                    input_df = decode_matrix(matrix)
+
+                    probabilities, _ = pipe.score_frame(input_df)
+
+                    return np.asarray(
+                        probabilities,
+                        dtype=float,
+                    ).reshape(-1)
+
+                # ------------------------------------------------
+                # 5. Tính SHAP
+                # ------------------------------------------------
+
+                with st.spinner(
+                    "Đang tính SHAP cho giao dịch được chọn..."
+                ):
+                    explainer = shap.Explainer(
+                        predict_probability,
+                        background_matrix,
+                        algorithm="permutation",
+                        feature_names=encoded_names,
+                    )
+
+                    shap_exp = explainer(
+                        target_matrix,
+                        max_evals=max(
+                            2 * background_matrix.shape[1] + 1,
+                            100,
+                        ),
+                    )
+
+                # ------------------------------------------------
+                # 6. Tổng hợp đóng góp về từng đặc trưng gốc
+                # ------------------------------------------------
+
+                values = np.asarray(shap_exp.values).reshape(-1)
+
+                shap_encoded = pd.DataFrame({
+                    "Đặc trưng mã hóa": encoded_names,
+                    "SHAP value": values,
+                })
+
+                # Gộp các cột one-hot thành một đặc trưng gốc.
+                rows = []
+
+                for col in numeric_cols:
+                    value = float(target_raw.iloc[0][col])
+
+                    matching = shap_encoded[
+                        shap_encoded["Đặc trưng mã hóa"] == col
+                    ]
+
+                    if not matching.empty:
+                        shap_value = float(
+                            matching["SHAP value"].iloc[0]
+                        )
+                    else:
+                        shap_value = 0.0
+
+                    rows.append({
+                        "Đặc trưng": col,
+                        "Giá trị": value,
+                        "SHAP value": shap_value,
+                    })
+
+                for col in categorical_cols:
+                    categories = category_values[col]
+
+                    names = [
+                        f"{col}={category}"
+                        for category in categories
+                    ]
+
+                    matching = shap_encoded[
+                        shap_encoded["Đặc trưng mã hóa"].isin(names)
+                    ]
+
+                    # Tổng đóng góp của nhóm one-hot cho biến gốc.
+                    shap_value = float(
+                        matching["SHAP value"].sum()
+                    )
+
+                    rows.append({
+                        "Đặc trưng": col,
+                        "Giá trị": str(target_raw.iloc[0][col]),
+                        "SHAP value": shap_value,
+                    })
+
+                shap_table = pd.DataFrame(rows)
+
+                shap_table["Độ lớn đóng góp"] = (
+                    shap_table["SHAP value"].abs()
+                )
+
+                shap_table = shap_table.sort_values(
+                    "Độ lớn đóng góp",
+                    ascending=False,
+                )
+
+                # ------------------------------------------------
+                # 7. Hiển thị kết quả
+                # ------------------------------------------------
+
+                st.success("Đã tạo giải thích SHAP.")
+
+                st.caption(
+                    "SHAP value dương biểu thị đóng góp làm tăng "
+                    "đầu ra xác suất gian lận; SHAP value âm biểu thị "
+                    "đóng góp làm giảm đầu ra đó. Đây là đóng góp "
+                    "theo mẫu nền, không phải quan hệ nhân quả."
+                )
+
+                st.dataframe(
+                    shap_table.head(15),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "SHAP value": st.column_config.NumberColumn(
+                            format="%.6f"
+                        ),
+                        "Độ lớn đóng góp": st.column_config.NumberColumn(
+                            format="%.6f"
+                        ),
+                    },
+                )
+
+                positive = shap_table[
+                    shap_table["SHAP value"] > 0
+                ].head(5)
+
+                negative = (
+                    shap_table[shap_table["SHAP value"] < 0]
+                    .sort_values("SHAP value")
+                    .head(5)
+                )
+
+                st.markdown("### Các yếu tố làm tăng xác suất")
+
+                if positive.empty:
+                    st.write(
+                        "Không có đặc trưng nào có SHAP value dương "
+                        "trong nhóm kết quả hiển thị."
+                    )
+                else:
+                    for _, row in positive.iterrows():
+                        st.write(
+                            f"- **{row['Đặc trưng']}** "
+                            f"(giá trị: {row['Giá trị']}): "
+                            f"SHAP = {row['SHAP value']:+.6f}"
+                        )
+
+                st.markdown("### Các yếu tố làm giảm xác suất")
+
+                if negative.empty:
+                    st.write(
+                        "Không có đặc trưng nào có SHAP value âm "
+                        "trong nhóm kết quả hiển thị."
+                    )
+                else:
+                    for _, row in negative.iterrows():
+                        st.write(
+                            f"- **{row['Đặc trưng']}** "
+                            f"(giá trị: {row['Giá trị']}): "
+                            f"SHAP = {row['SHAP value']:+.6f}"
+                        )
+
+                st.session_state["last_shap_row_id"] = selected_row_id
+                st.session_state["last_shap_table"] = shap_table
+
+            except ImportError:
+                st.error(
+                    "Chưa cài SHAP. Chạy lệnh: "
+                    "`python -m pip install shap`"
+                )
+
+            except Exception as error:
+                st.error(
+                    "Không tạo được giải thích SHAP cho giao dịch này."
+                )
+
+                with st.expander("Chi tiết lỗi SHAP"):
+                    st.exception(error)
 
                 max_evals = max(
                     2 * len(feature_names) + 1,
